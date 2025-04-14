@@ -1,8 +1,8 @@
+# #Step 2
+# #Adam Optimizers with Freezing
+# #not a mitigation technique, but reduces forgetting since the output heads retain their previous weights
+# #Catastrophic forgetting without any mitigation techniques -> rewrites the weight everytime a new task is trained on
 
-#Step 2
-#Adam Optimizers with Freezing
-#not a mitigation technique, but reduces forgetting since the output heads retain their previous weights
-#Catastrophic forgetting without any mitigation techniques -> rewrites the weight everytime a new task is trained on
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -11,6 +11,8 @@ import torchvision.transforms as transforms
 from torch.utils.data import DataLoader, Subset, Dataset
 import numpy as np
 import matplotlib.pyplot as plt
+from sklearn.metrics import f1_score, confusion_matrix, roc_auc_score
+import seaborn as sns
 
 # ----------------------------------------
 # 1. Define a Base CNN (Feature Extractor)
@@ -80,6 +82,10 @@ def test(model, criterion, dataloader, device, task_id):
     model.eval()
     test_loss = 0.0
     correct = 0
+    all_preds = []
+    all_labels = []
+    all_probs = []
+
     with torch.no_grad():
         for inputs, labels in dataloader:
             inputs, labels = inputs.to(device), labels.to(device)
@@ -88,7 +94,16 @@ def test(model, criterion, dataloader, device, task_id):
             test_loss += loss.item() * inputs.size(0)
             _, predicted = torch.max(outputs, 1)
             correct += (predicted == labels).sum().item()
-    return test_loss / len(dataloader.dataset), correct / len(dataloader.dataset)
+            all_preds.extend(predicted.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
+            probs = torch.softmax(outputs, dim=1)
+            all_probs.extend(probs.cpu().numpy())
+
+    return (test_loss / len(dataloader.dataset),
+            correct / len(dataloader.dataset),
+            np.array(all_preds),
+            np.array(all_labels),
+            np.array(all_probs))
 
 # ----------------------------------------
 # 5. Main experiment: Split CIFAR-100
@@ -116,6 +131,9 @@ def main():
         root='./data', train=False, transform=transform, download=True)
 
     results = {i: [] for i in range(len(tasks))}
+    f1_results = {i: [] for i in range(len(tasks))}
+    auc_results = {i: [] for i in range(len(tasks))}
+    conf_matrices = {}
 
     base_feature_model = SimpleCNN()
     model = MultiHeadCNN(base_feature_model, task_count=len(tasks)).to(device)
@@ -129,14 +147,13 @@ def main():
         train_loader = DataLoader(train_task, batch_size=batch_size, shuffle=True)
         test_loader = DataLoader(test_task, batch_size=batch_size, shuffle=False)
 
+        # Freeze all parameters except current task's head and feature extractor
         for name, param in model.named_parameters():
             param.requires_grad = False
 
         for name, param in model.named_parameters():
             if f'heads.{task_id}' in name or 'feature_extractor' in name:
                 param.requires_grad = True
-
-     
 
         optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=learning_rate)
 
@@ -146,26 +163,29 @@ def main():
 
         for eval_task_id, eval_classes in enumerate(tasks[:task_id+1]):
             eval_loader = DataLoader(ClassSubset(test_dataset, eval_classes), batch_size=batch_size, shuffle=False)
-            test_loss, accuracy = test(model, criterion, eval_loader, device, eval_task_id)
+            test_loss, accuracy, y_pred, y_true, y_prob = test(model, criterion, eval_loader, device, eval_task_id)
+
             results[eval_task_id].append(accuracy)
-            print(f"  -> Eval on Task {eval_task_id+1} (classes {eval_classes}): Accuracy = {accuracy*100:.2f}%")
+            f1 = f1_score(y_true, y_pred, average='macro')
 
-    # Plotting accuracy for each task over time
-    for task_id in range(len(tasks)):
-        plt.figure(figsize=(6, 4))
-        acc = results[task_id]
-        acc_padded = acc + [np.nan] * (len(tasks) - len(acc))
-        x_values = list(range(1, len(tasks) + 1))
-        plt.plot(x_values, acc_padded, marker='o', label=f"Task {task_id+1} (classes {tasks[task_id]})")
-        plt.xlabel("Task Sequence (Training Order)")
-        plt.ylabel("Test Accuracy")
-        plt.title(f"Accuracy for Task {task_id+1} over Time")
-        plt.ylim(0, 1.05)
-        plt.legend()
-        plt.grid(True)
-        plt.show()
+            try:
+                y_true_bin = np.zeros((len(y_true), 10))  # 10 classes per task
+                y_true_bin[np.arange(len(y_true)), y_true] = 1
+                auc = roc_auc_score(y_true_bin, y_prob, average='macro', multi_class='ovr')
+            except ValueError:
+                auc = float('nan')
 
-    # Combined plot for all tasks
+            f1_results[eval_task_id].append(f1)
+            auc_results[eval_task_id].append(auc)
+
+            if task_id == len(tasks) - 1 and eval_task_id == len(tasks) - 1:
+                cm = confusion_matrix(y_true, y_pred)
+                conf_matrices[eval_task_id] = cm
+
+            print(f"  -> Eval on Task {eval_task_id+1} (classes {eval_classes}): "
+                  f"Accuracy = {accuracy*100:.2f}%, F1 = {f1:.2f}, AUC = {auc:.2f}")
+
+    # Final combined accuracy plot
     plt.figure(figsize=(8, 6))
     for task_id in range(len(tasks)):
         acc = results[task_id]
@@ -174,11 +194,38 @@ def main():
                  label=f"Task {task_id+1} (classes {tasks[task_id]})")
     plt.xlabel("Task Sequence (Training Order)")
     plt.ylabel("Test Accuracy")
-    plt.title("ADAM Optimizer with freezing in Split CIFAR-100")
+    plt.title("ADAM Optimizer with Freezing in Split CIFAR-100")
     plt.ylim(0, 1.05)
     plt.legend()
     plt.grid(True)
     plt.show()
+
+    # Final F1 score plot
+    plt.figure(figsize=(8, 6))
+    for task_id in range(len(tasks)):
+        f1 = f1_results[task_id]
+        f1_padded = f1 + [np.nan] * (len(tasks) - len(f1))
+        plt.plot(range(1, len(tasks) + 1), f1_padded, marker='o',
+                 label=f"Task {task_id+1} (classes {tasks[task_id]})")
+    plt.xlabel("Task Sequence (Training Order)")
+    plt.ylabel("F1 Score")
+    plt.title("F1 Score over Time")
+    plt.ylim(0, 1.05)
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+    # Confusion matrix for the last task
+    if len(conf_matrices) > 0:
+        task_id = len(tasks) - 1
+        cm = conf_matrices[task_id]
+        plt.figure(figsize=(6, 5))
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
+        plt.title(f"Confusion Matrix - Task {task_id+1}")
+        plt.xlabel("Predicted Label")
+        plt.ylabel("True Label")
+        plt.tight_layout()
+        plt.show()
 
 if __name__ == "__main__":
     main()
