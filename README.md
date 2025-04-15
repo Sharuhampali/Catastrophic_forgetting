@@ -1,5 +1,3 @@
-# Catastrophic_Forgetting
-
 # Continual Learning on Split CIFAR-100
 
 This project investigates various continual learning methods to mitigate catastrophic forgetting using the Split CIFAR-100 benchmark. A custom multi-head CNN model is used, with each head handling a 10-class task (total of 10 tasks). Methods include:
