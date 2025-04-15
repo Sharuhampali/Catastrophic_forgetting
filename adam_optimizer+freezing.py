@@ -211,7 +211,6 @@ def main():
     plt.grid(True)
     plt.show()
 
-    # AUC score plot
     plt.figure(figsize=(8, 6))
     for task_id in range(len(tasks)):
         auc = auc_results[task_id]
@@ -226,7 +225,6 @@ def main():
     plt.grid(True)
     plt.show()
 
-    # Confusion matrix for the last task
     if len(conf_matrices) > 0:
         task_id = len(tasks) - 1
         cm = conf_matrices[task_id]

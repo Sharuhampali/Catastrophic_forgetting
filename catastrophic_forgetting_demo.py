@@ -193,8 +193,6 @@ def main():
     plt.legend()
     plt.grid(True)
     plt.show()
-
-    # Confusion matrix 
     if len(conf_matrices) > 0:
         task_id = len(tasks) - 1
         cm = conf_matrices[task_id]
