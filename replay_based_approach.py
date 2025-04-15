@@ -8,7 +8,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import random
 from collections import defaultdict
-from sklearn.metrics import f1_score, confusion_matrix
+from sklearn.metrics import f1_score, confusion_matrix, roc_auc_score
 import seaborn as sns
 
 # ----------------------------------------
